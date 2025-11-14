@@ -60,7 +60,7 @@ class QuantumPongAgent:
         # --- Backprop solo para la QNN de esa acción ---
         self.optimizers[action_index].zero_grad()
         output = self.models[action_index](state_tensor)
-        loss = self.loss_fn(output, torch.tensor([target]))
+        loss = self.loss_fn(output, torch.tensor([target], dtype=torch.float32))
         loss.backward()
         self.optimizers[action_index].step()
 
