@@ -4,65 +4,66 @@ from random import randint
 from time import sleep
 from IPython.display import clear_output
 from math import ceil,floor
+from qiskit import Aer
+from qiskit.circuit.library import ZZFeatureMap, RealAmplitudes
+from qiskit_machine_learning.neural_networks import EstimatorQNN
+from qiskit_machine_learning.connectors import TorchConnector
+import torch
+import torch.nn as nn
+import torch.optim as optim
 
-class PongAgent:
-    
-    def __init__(self, game, policy=None, discount_factor = 0.1, learning_rate = 0.1, ratio_explotacion = 0.9):
-
-        # Creamos la tabla de politicas
-        if policy is not None:
-            self._q_table = policy
-        else:
-            position = list(game.positions_space.shape)
-            position.append(len(game.action_space))
-            self._q_table = np.zeros(position)
-        
+class QuantumPongAgent:
+    def __init__(self, game, discount_factor=0.1, learning_rate=0.01, ratio_explotacion=0.9):
         self.discount_factor = discount_factor
         self.learning_rate = learning_rate
         self.ratio_explotacion = ratio_explotacion
+        self.action_space = game.action_space
+        self.num_actions = len(game.action_space)
+        self.num_qubits = 3
+        
+        feature_map = ZZFeatureMap(self.num_qubits)
+        ansatz = RealAmplitudes(self.num_qubits, reps=1)
+        qc = feature_map.compose(ansatz)
 
-    def get_next_step(self, state, game):
-        
-        # Damos un paso aleatorio...
-        next_step = np.random.choice(list(game.action_space))
-        
-        # o tomaremos el mejor paso...
+        # --- QNNs independientes por acción ---
+        self.qnns = [EstimatorQNN(circuit=qc,
+                                  input_params=feature_map.parameters,
+                                  weight_params=ansatz.parameters) 
+                     for _ in range(self.num_actions)]
+        self.models = [TorchConnector(qnn) for qnn in self.qnns]
+        self.optimizers = [optim.Adam(model.parameters(), lr=learning_rate) for model in self.models]
+        self.loss_fn = nn.MSELoss()
+
+    def state_to_tensor(self, state):
+        return torch.tensor([s / 50 for s in state], dtype=torch.float32)
+
+    def get_next_step(self, state):
+        state_tensor = self.state_to_tensor(state)
+        q_values = torch.tensor([model(state_tensor).item() for model in self.models])
         if np.random.uniform() <= self.ratio_explotacion:
-            # tomar el maximo
-            idx_action = np.random.choice(np.flatnonzero(
-                    self._q_table[state[0],state[1],state[2]] == self._q_table[state[0],state[1],state[2]].max()
-                ))
-            next_step = list(game.action_space)[idx_action]
+            return self.action_space[torch.argmax(q_values).item()]
+        else:
+            return np.random.choice(self.action_space)
 
-        return next_step
+    def update(self, state, action_taken, reward, next_state, done):
+        state_tensor = self.state_to_tensor(state)
+        next_state_tensor = self.state_to_tensor(next_state)
 
-    # actualizamos las politicas con las recompensas obtenidas
-    def update(self, game, old_state, action_taken, reward_action_taken, new_state, reached_end):
-        idx_action_taken =list(game.action_space).index(action_taken)
+        q_values = torch.tensor([model(state_tensor).item() for model in self.models])
+        q_next = torch.tensor([model(next_state_tensor).item() for model in self.models])
 
-        actual_q_value_options = self._q_table[old_state[0], old_state[1], old_state[2]]
-        actual_q_value = actual_q_value_options[idx_action_taken]
+        target = reward
+        if not done:
+            target += self.discount_factor * torch.max(q_next)
 
-        future_q_value_options = self._q_table[new_state[0], new_state[1], new_state[2]]
-        future_max_q_value = reward_action_taken  +  self.discount_factor*future_q_value_options.max()
-        if reached_end:
-            future_max_q_value = reward_action_taken #maximum reward
+        action_index = self.action_space.index(action_taken)
+        # --- Backprop solo para la QNN de esa acción ---
+        self.optimizers[action_index].zero_grad()
+        output = self.models[action_index](state_tensor)
+        loss = self.loss_fn(output, torch.tensor([target]))
+        loss.backward()
+        self.optimizers[action_index].step()
 
-        self._q_table[old_state[0], old_state[1], old_state[2], idx_action_taken] = actual_q_value + \
-                                              self.learning_rate*(future_max_q_value -actual_q_value)
-    
-    def print_policy(self):
-        for row in np.round(self._q_table,1):
-            for column in row:
-                print('[', end='')
-                for value in column:
-                    print(str(value).zfill(5), end=' ')
-                print('] ', end='')
-            print('')
-            
-    def get_policy(self):
-        return self._q_table
-    
 
 class PongEnvironment:
     
@@ -201,55 +202,59 @@ class PongEnvironment:
         return fig, ax
 
 
-def play(rounds=5000, max_life=3, discount_factor = 0.1, learning_rate = 0.1,
-         ratio_explotacion=0.9,learner=None, game=None, animate=False):
+def play_quantum(rounds=50, max_life=3, discount_factor = 0.1, learning_rate = 0.01,
+                 ratio_explotacion=0.9, learner=None, game=None, animate=False):
 
     if game is None:
         game = PongEnvironment(max_life=max_life, movimiento_px = 3)
         
     if learner is None:
-        print("Begin new Train!")
-        learner = PongAgent(game, discount_factor = discount_factor,learning_rate = learning_rate, ratio_explotacion= ratio_explotacion)
+        print("Begin new Quantum Train!")
+        learner = QuantumPongAgent(game, discount_factor=discount_factor, learning_rate=learning_rate, ratio_explotacion=ratio_explotacion)
 
-    max_points= -9999
+    max_points = -9999
     first_max_reached = 0
-    total_rw=0
-    steps=[]
+    total_rw = 0
+    steps = []
 
-    for played_games in range(0, rounds):
+    for played_games in range(rounds):
         state = game.reset()
-        reward, done = None, None
-        
-        itera=0
-        while (done != True) and (itera < 3000 and game.total_reward<=1000):
-            old_state = np.array(state)
-            next_action = learner.get_next_step(state, game)
-            state, reward, done = game.step(next_action, animate=animate)
-            if rounds > 1:
-                learner.update(game, old_state, next_action, reward, state, done)
-            itera+=1
-        
+        done = False
+        itera = 0
+
+        while not done and itera < 3000 and game.total_reward <= 1000:
+            action = learner.get_next_step(state)
+            next_state, reward, done = game.step(action, animate=animate)
+            learner.update(state, action, reward, next_state, done)
+            state = next_state
+            itera += 1
+
         steps.append(itera)
-        
-        total_rw+=game.total_reward
+        total_rw += game.total_reward
+
         if game.total_reward > max_points:
-            max_points=game.total_reward
+            max_points = game.total_reward
             first_max_reached = played_games
-        
-        if played_games %500==0 and played_games >1 and not animate:
-            print("-- Partidas[", played_games, "] Avg.Puntos[", int(total_rw/played_games),"]  AVG Steps[", int(np.array(steps).mean()), "] Max Score[", max_points,"]")
-                
-    if played_games>1:
-        print('Partidas[',played_games,'] Avg.Puntos[',int(total_rw/played_games),'] Max score[', max_points,'] en partida[',first_max_reached,']')
-        
-    #learner.print_policy()
-    
+
+        if played_games % 10 == 0 and played_games > 0 and not animate:
+            print(f"-- Partidas[{played_games}] Avg.Puntos[{int(total_rw/(played_games+1))}] "
+                  f"AVG Steps[{int(np.array(steps).mean())}] Max Score[{max_points}]")
+
+    print(f'Partidas[{played_games}] Avg.Puntos[{int(total_rw/(played_games+1))}] '
+          f'Max score[{max_points}] en partida[{first_max_reached}]')
+
     return learner, game
 
 
-learner, game = play(rounds=6000, discount_factor = 0.2, learning_rate = 0.1, ratio_explotacion=0.85)
-
-learner2 = PongAgent(game, policy=learner.get_policy())
-learner2.ratio_explotacion = 1.0
 demo_game = PongEnvironment(max_life=3, movimiento_px=3)
-player = play(rounds=1, learner=learner2, game=demo_game, animate=True)
+quantum_agent = QuantumPongAgent(demo_game, discount_factor=0.2, learning_rate=0.01, ratio_explotacion=0.85)
+
+# Entrenamiento
+learner, game = play_quantum(rounds=50, learner=quantum_agent, game=demo_game, animate=False)
+
+# Demo final con animación
+state = demo_game.reset()
+done = False
+while not done:
+    action = learner.get_next_step(state)
+    state, reward, done = demo_game.step(action, animate=True)

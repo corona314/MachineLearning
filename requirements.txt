@@ -1,0 +1,16 @@
+# Librerías científicas
+numpy==1.26.0
+matplotlib==3.8.0
+
+# IPython display
+ipython==8.17.0
+
+# PyTorch y torchvision (CPU)
+torch==2.3.1
+torchvision==0.18.1
+torchaudio==2.3.1
+
+# Qiskit y Machine Learning
+qiskit==0.45.0
+qiskit-machine-learning==0.7.1
+qiskit-aer==0.13.0
