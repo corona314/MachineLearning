@@ -39,9 +39,11 @@ except Exception as e:
 # ---------------------------
 class PongEnvironment:
     
-    def __init__(self, max_life=3, height_px = 40, width_px = 50, movimiento_px = 3):
+    def __init__(self, max_life=3, height_px = 40, width_px = 50, movimiento_px = 3, default_reward = 10):
         
         self.action_space = ['Arriba','Abajo']
+        
+        self.default_reward = default_reward
         
         self._step_penalization = 0
         
@@ -82,24 +84,26 @@ class PongEnvironment:
         self.y = randint(0, self.height_px-10)
         return self.state
 
-    def step(self, action, animate=False):
-        self._apply_action(action, animate)
+    def step(self, action, animate=False, custom_reward=None):
+        if custom_reward is None:
+            custom_reward = self.default_reward
+        self._apply_action(action, animate, custom_reward)
         done = self.lives <=0 # final
         reward = self.score
         reward += self._step_penalization
         self.total_reward += reward
         return self.state, reward , done
 
-    def _apply_action(self, action, animate=False):
+    def _apply_action(self, action, animate=False, custom_reward=10):
         
         if action == "Arriba":
             self.player1 += abs(self.dy)
         elif action == "Abajo":
             self.player1 -= abs(self.dy)
-            
+
         self.avanza_player()
 
-        self.avanza_frame()
+        self.avanza_frame(custom_reward)
 
         if animate:
             if not hasattr(self, '_fig_ax'):
@@ -121,7 +125,7 @@ class PongEnvironment:
         elif self.player1 <= -abs(self.dy):
             self.player1 = -abs(self.dy)
 
-    def avanza_frame(self):
+    def avanza_frame(self, reward):
         self.x += self.dx
         self.y += self.dy
         if self.x <= 3 or self.x > self.width_px:
@@ -130,9 +134,9 @@ class PongEnvironment:
                 ret = self.detectaColision(self.y, self.player1)
 
                 if ret:
-                    self.score = 10
+                    self.score = reward # recompensa positiva
                 else:
-                    self.score = -10
+                    self.score = -reward # recompensa negativa
                     self.lives -= 1
                     if self.lives>0:
                         self.x = randint(int(self.width_px/2), self.width_px)
@@ -398,61 +402,56 @@ def main():
     parser.add_argument('--budget', type=float, default=600.0, help='Segundos (time) o episodios (episodes)')
     parser.add_argument('--repeats', type=int, default=3, help='Repeticiones por agente (seeds)')
     parser.add_argument('--out', default='results', help='Directorio de salida para CSV/plots')
+    parser.add_argument('--agents', default='classical,quantum', help='Qué agentes correr: classical, quantum, o ambos separados por coma')
+    parser.add_argument('--reward', type=float, default=10.0, help='Recompensa por golpe de pelota (default=10)')
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
 
     seeds = list(range(args.repeats))
+    selected_agents = [a.strip() for a in args.agents.split(',')]
     classical_results = []
     quantum_results = []
 
-    # parámetros (ajusta aquí si QNN simula muy lento)
-    game_kwargs = {'max_life': 3, 'height_px': 40, 'width_px': 50, 'movimiento_px': 3}
+    # parámetros (ajustar aquí si QNN simula muy lento)
+    game_kwargs = {'max_life': 3, 'height_px': 40, 'width_px': 50, 'movimiento_px': 3, 'default_reward': args.reward}
     classical_kwargs = {'discount_factor':0.2, 'learning_rate':0.1, 'ratio_explotacion':0.85}
     quantum_kwargs = {'discount_factor':0.2, 'learning_rate':0.01, 'ratio_explotacion':0.85, 'num_qubits':3, 'reps':1}
 
     for s in seeds:
-        print(f"\nRunning classical, seed={s}")
-        res_c = run_single('classical', args.mode, args.budget, s, classical_kwargs, game_kwargs)
-        classical_results.append(res_c)
-        print(f"  -> done episodes={res_c['episodes_done']} time={res_c['total_time_s']:.1f}s avg_r={res_c['avg_reward_per_ep']:.2f}")
+        if 'classical' in selected_agents:
+            print(f"\nRunning classical, seed={s}")
+            res_c = run_single('classical', args.mode, args.budget, s, classical_kwargs, game_kwargs)
+            classical_results.append(res_c)
+            print(f"  -> done episodes={res_c['episodes_done']} time={res_c['total_time_s']:.1f}s avg_r={res_c['avg_reward_per_ep']:.2f}")
 
-        if QISKIT_AVAILABLE:
-            print(f"Running quantum, seed={s}")
-            res_q = run_single('quantum', args.mode, args.budget, s, quantum_kwargs, game_kwargs)
-            quantum_results.append(res_q)
-            print(f"  -> done episodes={res_q['episodes_done']} time={res_q['total_time_s']:.1f}s avg_r={res_q['avg_reward_per_ep']:.2f} fwd={res_q['total_forward_calls']}")
-        else:
-            print("Skipping quantum run: Qiskit/Torch no disponibles.")
-            quantum_results = []
+        if 'quantum' in selected_agents:
+            if QISKIT_AVAILABLE:
+                print(f"Running quantum, seed={s}")
+                res_q = run_single('quantum', args.mode, args.budget, s, quantum_kwargs, game_kwargs)
+                quantum_results.append(res_q)
+                print(f"  -> done episodes={res_q['episodes_done']} time={res_q['total_time_s']:.1f}s avg_r={res_q['avg_reward_per_ep']:.2f} fwd={res_q['total_forward_calls']}")
+            else:
+                print("Skipping quantum run: Qiskit/Torch no disponibles.")
 
     # resumen e impresión
-    df_classic = aggregate_and_print(classical_results, "CLÁSICO")
-    df_classic.to_csv(os.path.join(args.out, "classical_summary.csv"), index=False)
+    if classical_results:
+        df_classic = aggregate_and_print(classical_results, "CLÁSICO")
+        df_classic.to_csv(os.path.join(args.out, "classical_summary.csv"), index=False)
+        save_detail(classical_results, os.path.join(args.out, "classical_rewards.csv"))
+
     if quantum_results:
         df_quantum = aggregate_and_print(quantum_results, "CUÁNTICO")
         df_quantum.to_csv(os.path.join(args.out, "quantum_summary.csv"), index=False)
-
-    # guardar detalle de rewards por episodio por run
-    def save_detail(results, fname):
-        rows = []
-        for r in results:
-            for i, rew in enumerate(r['rewards']):
-                rows.append({'seed': r['seed'], 'ep': i, 'reward': rew})
-        pd.DataFrame(rows).to_csv(fname, index=False)
-
-    save_detail(classical_results, os.path.join(args.out, "classical_rewards.csv"))
-    if quantum_results:
         save_detail(quantum_results, os.path.join(args.out, "quantum_rewards.csv"))
 
     # plot ejemplo (reward medio por episodio across seeds)
     try:
         fig, ax = plt.subplots()
-        # clásico
-        dfc = pd.read_csv(os.path.join(args.out, "classical_rewards.csv"))
-        gp = dfc.groupby('ep')['reward'].agg(['mean','std']).reset_index()
-        ax.plot(gp['ep'], gp['mean'], label='clásico')
-        # cuántico
+        if classical_results:
+            dfc = pd.read_csv(os.path.join(args.out, "classical_rewards.csv"))
+            gp = dfc.groupby('ep')['reward'].agg(['mean','std']).reset_index()
+            ax.plot(gp['ep'], gp['mean'], label='clásico')
         if quantum_results:
             dfq = pd.read_csv(os.path.join(args.out, "quantum_rewards.csv"))
             gq = dfq.groupby('ep')['reward'].agg(['mean','std']).reset_index()
@@ -465,6 +464,13 @@ def main():
         print(f"Gráfica guardada en {args.out}/learning_curves.png")
     except Exception as e:
         print("No se pudo generar la gráfica:", e)
+
+def save_detail(results, fname):
+    rows = []
+    for r in results:
+        for i, rew in enumerate(r['rewards']):
+            rows.append({'seed': r['seed'], 'ep': i, 'reward': rew})
+    pd.DataFrame(rows).to_csv(fname, index=False)
 
 if __name__ == '__main__':
     main()

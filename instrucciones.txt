@@ -15,4 +15,9 @@
 
 
 - Para ejecutar experiment.py:
-    python experiment.py --mode <episodes|time> --budget <cantidad de tiempo en segundos o cantidad de shots> --repeats <# de repeticiones> --out <ruta donde guardar datos>
+    python experiment.py 
+    --mode <episodes|time> 
+    --budget <float: cantidad de tiempo en segundos o cantidad de shots> 
+    --repeats <int: # de repeticiones> 
+    --out <ruta donde guardar datos>
+    --reward <float: recompensa (default 10)>
