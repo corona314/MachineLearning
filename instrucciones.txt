@@ -6,7 +6,7 @@
     python -m venv quantum_env
 
     - Windows:
-        .\quantum_env\Scripts\Activate.ps1.\quantum_env\Scripts\Activate.ps1
+        .\quantum_env\Scripts\Activate.ps1
 
     - Linux:
         source quantum_env/bin/activate
@@ -15,9 +15,13 @@
 
 
 - Para ejecutar experiment.py:
-    python experiment.py 
+    python experiment.py --mode --budget --repeats --out --agent --reward
+    
     --mode <episodes|time> 
     --budget <float: cantidad de tiempo en segundos o cantidad de shots> 
     --repeats <int: # de repeticiones> 
     --out <ruta donde guardar datos>
+    --agent <quantum|classical>
     --reward <float: recompensa (default 10)>
+
+

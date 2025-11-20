@@ -247,11 +247,11 @@ def play(rounds=5000, max_life=3, discount_factor = 0.1, learning_rate = 0.1,
     return learner, game
 
 
-learner, game = play(rounds=6000, discount_factor = 0.2, learning_rate = 0.1, ratio_explotacion=0.85)
+learner, game = play(rounds=10000, discount_factor = 0.2, learning_rate = 0.1, ratio_explotacion=0.85)
 
 learner2 = PongAgent(game, policy=learner.get_policy())
 learner2.ratio_explotacion = 1.0
 demo_game = PongEnvironment(max_life=3, movimiento_px=3)
 player = play(rounds=1, learner=learner2, game=demo_game, animate=True)
 
-#learner2.print_policy()
+learner2.print_policy()

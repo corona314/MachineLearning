@@ -224,8 +224,8 @@ class PongAgent:
 # Agente cuántico
 # ---------------------------
 class QuantumPongAgent:
-    def __init__(self, game, discount_factor=0.1, learning_rate=0.01, ratio_explotacion=0.9,
-                 num_qubits=3, reps=1):
+    def __init__(self, game, discount_factor=0.1, learning_rate=0.01,
+                 ratio_explotacion=0.9, num_qubits=3, reps=1, device='cpu'):
         if not QISKIT_AVAILABLE:
             raise RuntimeError("Qiskit/Torch no están disponibles en este entorno.")
         self.discount_factor = discount_factor
@@ -234,35 +234,55 @@ class QuantumPongAgent:
         self.action_space = game.action_space
         self.num_actions = len(game.action_space)
         self.num_qubits = num_qubits
-        # instrumentation
+        self.device = torch.device(device)
+
+        # instrumentación
         self.forward_calls = 0
         self.backward_calls = 0
+
         # construir circuito simple (ajusta num_qubits/reps para tiempo)
         feature_map = ZZFeatureMap(self.num_qubits)
         ansatz = RealAmplitudes(self.num_qubits, reps=reps)
         qc = feature_map.compose(ansatz)
+
         # QNN por acción (simple y directo)
         self.qnns = [EstimatorQNN(circuit=qc,
                                   input_params=feature_map.parameters,
-                                  weight_params=ansatz.parameters) 
+                                  weight_params=ansatz.parameters)
                      for _ in range(self.num_actions)]
-        self.models = [TorchConnector(qnn) for qnn in self.qnns]
+
+        # Conectar a Torch y mover a device; poner en eval() por defecto
+        self.models = []
+        for qnn in self.qnns:
+            model = TorchConnector(qnn)
+            model.to(self.device)
+            model.eval()
+            self.models.append(model)
+
+        # optimizadores (uno por modelo)
         self.optimizers = [optim.Adam(model.parameters(), lr=learning_rate) for model in self.models]
         self.loss_fn = nn.MSELoss()
 
     def state_to_tensor(self, state):
         # escalado sencillo; ajústalo si tu feature map espera otro rango
-        return torch.tensor([s / 50 for s in state], dtype=torch.float32)
+        t = torch.tensor([s / 50 for s in state], dtype=torch.float32, device=self.device)
+        return t
 
     def get_next_step(self, state):
         state_tensor = self.state_to_tensor(state)
         q_vals = []
-        for model in self.models:
-            self.forward_calls += 1
-            out = model(state_tensor)
-            # convertir a float escalar
-            val = out.detach().cpu().numpy()
-            q_vals.append(float(np.asarray(val).reshape(-1)[0]))
+
+        # inferencia sin gradiente: una llamada por modelo
+        with torch.no_grad():
+            for model in self.models:
+                self.forward_calls += 1
+                out = model(state_tensor)  # tensor
+                try:
+                    val = out.item()       # escalar
+                except Exception:
+                    val = float(out.cpu().numpy().reshape(-1)[0])
+                q_vals.append(val)
+
         q_tensor = np.array(q_vals)
         if np.random.uniform() <= self.ratio_explotacion:
             return self.action_space[int(np.argmax(q_tensor))]
@@ -272,26 +292,47 @@ class QuantumPongAgent:
     def update(self, state, action_taken, reward, next_state, done):
         state_tensor = self.state_to_tensor(state)
         next_state_tensor = self.state_to_tensor(next_state)
+
+        # inferencias para targets con no_grad (evitamos construir graph)
         q_vals = []
         q_next = []
-        for model in self.models:
-            self.forward_calls += 1
-            q_vals.append(float(np.asarray(model(state_tensor).detach().cpu().numpy()).reshape(-1)[0]))
-            self.forward_calls += 1
-            q_next.append(float(np.asarray(model(next_state_tensor).detach().cpu().numpy()).reshape(-1)[0]))
+        with torch.no_grad():
+            for model in self.models:
+                self.forward_calls += 1
+                out1 = model(state_tensor)
+                try:
+                    q_vals.append(out1.item())
+                except Exception:
+                    q_vals.append(float(out1.cpu().numpy().reshape(-1)[0]))
+
+                self.forward_calls += 1
+                out2 = model(next_state_tensor)
+                try:
+                    q_next.append(out2.item())
+                except Exception:
+                    q_next.append(float(out2.cpu().numpy().reshape(-1)[0]))
 
         target = reward
         if not done:
             target += self.discount_factor * max(q_next)
 
         action_index = self.action_space.index(action_taken)
+
         # backprop solo para la QNN de esa acción
         self.optimizers[action_index].zero_grad()
         self.backward_calls += 1
-        output = self.models[action_index](state_tensor)
-        loss = self.loss_fn(output, torch.tensor([target], dtype=torch.float32))
+
+        model = self.models[action_index]
+        model.train()  # activamos modo train sólo para el forward/backward necesario
+
+        output = model(state_tensor)  # forward con grad
+        # asegurar que el tensor objetivo está en el mismo device
+        target_tensor = torch.tensor([target], dtype=torch.float32, device=self.device)
+        loss = self.loss_fn(output, target_tensor)
         loss.backward()
         self.optimizers[action_index].step()
+
+        model.eval()   # volvemos a eval para inferencias siguientes
 
 # ---------------------------
 # Runner de experimentos
