@@ -1,0 +1,18 @@
+Qiskit cargado. AerSimulator disponible? Yes
+Lanzando 2 tareas en 20 workers...
+Qiskit cargado. AerSimulator disponible? Yes
+Finished: classical seed=0 eps=10 time=0.0s avg_r=-23.00
+Qiskit cargado. AerSimulator disponible? Yes
+Finished: quantum seed=0 eps=10 time=270.1s avg_r=-2.00
+
+=== RESUMEN CLÁSICO ===
+Repeticiones: 1, Seeds: [0]
+Episodes per run: mean=10.0 std=0.0
+Tiempo total (s): mean=0.0 std=0.0
+Avg reward/ep: mean=-23.000 std=0.000
+
+=== RESUMEN CUÁNTICO ===
+Repeticiones: 1, Seeds: [0]
+Episodes per run: mean=10.0 std=0.0
+Tiempo total (s): mean=270.1 std=0.0
+Avg reward/ep: mean=-2.000 std=0.000
