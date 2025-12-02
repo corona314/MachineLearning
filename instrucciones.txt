@@ -16,7 +16,7 @@ INSTRUCCIONES DE USO
 
 
 EJECUCIÓN DEL EXPERIMENTO:
-    python experiment.py --mode --budget --repeats --out --agent --reward
+    python experiment_new.py --mode --budget --repeats --out --agent --reward
 
 PARÁMETROS:
     --mode <episodes|time>
