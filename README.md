@@ -83,8 +83,10 @@ Parámetro ->	Tipo -> Descripción
 ## Resultados
 
 Tras cada ejecución se generan:
-CSV con métricas por episodio
-Gráficas de comparación
-Logs resumidos
-Carpeta de salida configurable
-Todo aparece en la ruta que definas con --out.
+
+* CSV con métricas por episodio
+* Gráficas de comparación
+* Logs resumidos
+* Carpeta de salida configurable
+* Todo aparece en la ruta que definas con --out.
+
