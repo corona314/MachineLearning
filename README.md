@@ -66,11 +66,17 @@ python experiment.py --mode --budget --repeats --out --agent --reward
 
 ##### Parámetros disponibles
 Parámetro ->	Tipo -> Descripción
+
 --mode ->	episodes o time ->	Controla si se limita por episodios o por tiempo real
+
 --budget -> float -> Nº de episodios o segundos según el modo
+
 --repeats -> int -> Número de repeticiones del experimento (default: 1)
+
 --out -> str -> Carpeta donde guardar métricas y gráficos
+
 --agent -> quantum o classical -> Selección del agente (default: both)
+
 --reward -> float -> Recompensa por acierto (default: 10)
 
 
