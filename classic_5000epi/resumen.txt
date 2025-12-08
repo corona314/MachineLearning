@@ -1,0 +1,9 @@
+Running classical, seed=0
+  -> done episodes=5000 time=36.8s avg_r=42.20
+
+=== RESUMEN CLÁSICO ===
+Repeticiones: 1, Seeds: [0]
+Episodes per run: mean=5000.0 std=0.0
+Tiempo total (s): mean=36.8 std=0.0
+Avg reward/ep: mean=42.202 std=0.000
+Gráfica guardada en clasic_5000epi/learning_curves.png

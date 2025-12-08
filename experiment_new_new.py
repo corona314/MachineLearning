@@ -1,0 +1,646 @@
+#!/usr/bin/env python3
+# experiment.py
+"""
+Comparativa rápida entre agente clásico tabular y agente basado en QNN.
+Modo: igualar por tiempo (wall-clock) o por episodios (número de partidas).
+Genera CSV con métricas por episodio y un resumen impreso.
+
+Requisitos:
+- numpy, matplotlib, pandas, torch, qiskit (si vas a usar el agente cuántico)
+"""
+
+import time
+import argparse
+import warnings
+import os
+import statistics
+import numpy as np
+from time import sleep
+from random import randint
+from math import ceil, floor
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Intento de import qiskit/torch; el script funcionará con solo el agente clásico si faltan libs.
+# ----------------------------
+# Dependencias (imports robustos)
+# ----------------------------
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    TORCH_AVAILABLE = True
+except Exception:
+    TORCH_AVAILABLE = False
+try:
+    # circuit libs
+    from qiskit.circuit.library import ZZFeatureMap, RealAmplitudes
+    # paulis / observables
+    from qiskit.quantum_info import SparsePauliOp, Pauli
+    # AerSimulator (intento qiskit_aer primero, luego providers.aer)
+    try:
+        from qiskit_aer import AerSimulator
+    except Exception:
+        from qiskit import AerSimulator
+    # Estimator primitive (puede existir)
+    try:
+        from qiskit.primitives import Estimator as PrimitiveEstimator
+    except Exception:
+        PrimitiveEstimator = None
+    # qiskit-ml
+    from qiskit_machine_learning.neural_networks import EstimatorQNN
+    from qiskit_machine_learning.connectors import TorchConnector
+    from qiskit import transpile
+
+    QISKIT_AVAILABLE = True
+except Exception as e:
+    QISKIT_AVAILABLE = False
+    _qiskit_import_error = e
+
+# Mensaje de diagnóstico
+if not QISKIT_AVAILABLE:
+    print("WARNING: Qiskit no cargado correctamente. Error:", _qiskit_import_error)
+else:
+    print("Qiskit cargado. AerSimulator disponible?", 'Yes' if 'AerSimulator' in globals() and AerSimulator is not None else 'No')
+
+
+# ---------------------------
+# Entorno
+# ---------------------------
+class PongEnvironment:
+    
+    def __init__(self, max_life=3, height_px = 40, width_px = 50, movimiento_px = 3, default_reward = 10):
+        
+        self.action_space = ['Arriba','Abajo']
+        
+        self.default_reward = default_reward
+        
+        self._step_penalization = 0
+        
+        self.state = [0,0,0]
+        
+        self.total_reward = 0
+        
+        self.dx = movimiento_px
+        self.dy = movimiento_px
+        
+        filas = ceil(height_px/movimiento_px)
+        columnas = ceil(width_px/movimiento_px)
+        
+        self.positions_space = np.array([[[0 for z in range(columnas)] for y in range(filas)] for x in range(filas)])
+
+        self.lives = max_life
+        self.max_life=max_life
+        
+        self.x = randint(int(width_px/2), width_px) 
+        self.y = randint(0, height_px-10)
+        
+        self.player_alto = int(height_px/4)
+
+        self.player1 = self.player_alto  # posic. inicial del player
+        
+        self.score = 0
+        
+        self.width_px = width_px
+        self.height_px = height_px
+        self.radio = 2.5
+
+    def reset(self):
+        self.total_reward = 0
+        self.state = [0,0,0]
+        self.lives = self.max_life
+        self.score = 0
+        self.x = randint(int(self.width_px/2), self.width_px) 
+        self.y = randint(0, self.height_px-10)
+        return self.state
+
+    def step(self, action, animate=False, custom_reward=None):
+        if custom_reward is None:
+            custom_reward = self.default_reward
+        self._apply_action(action, animate, custom_reward)
+        done = self.lives <=0 # final
+        reward = self.score
+        reward += self._step_penalization
+        self.total_reward += reward
+        return self.state, reward , done
+
+    def _apply_action(self, action, animate=False, custom_reward=10):
+        
+        if action == "Arriba":
+            self.player1 += abs(self.dy)
+        elif action == "Abajo":
+            self.player1 -= abs(self.dy)
+
+        self.avanza_player()
+
+        self.avanza_frame(custom_reward)
+
+        if animate:
+            if not hasattr(self, '_fig_ax'):
+                self._fig_ax = self.dibujar_frame()  # crea la figura y eje la primera vez
+            else:
+                self._fig_ax = self.dibujar_frame(self._fig_ax)  # refresca la misma figura
+
+        self.state = (floor(self.player1/abs(self.dy))-2, floor(self.y/abs(self.dy))-2, floor(self.x/abs(self.dx))-2)
+    
+    def detectaColision(self, ball_y, player_y):
+        if (player_y+self.player_alto >= (ball_y-self.radio)) and (player_y <= (ball_y+self.radio)):
+            return True
+        else:
+            return False
+    
+    def avanza_player(self):
+        if self.player1 + self.player_alto >= self.height_px:
+            self.player1 = self.height_px - self.player_alto
+        elif self.player1 <= -abs(self.dy):
+            self.player1 = -abs(self.dy)
+
+    def avanza_frame(self, reward):
+        self.x += self.dx
+        self.y += self.dy
+        if self.x <= 3 or self.x > self.width_px:
+            self.dx = -self.dx
+            if self.x <= 3:
+                ret = self.detectaColision(self.y, self.player1)
+
+                if ret:
+                    self.score = reward # recompensa positiva
+                else:
+                    self.score = -reward # recompensa negativa
+                    self.lives -= 1
+                    if self.lives>0:
+                        self.x = randint(int(self.width_px/2), self.width_px)
+                        self.y = randint(0, self.height_px-10)
+                        self.dx = abs(self.dx)
+                        self.dy = abs(self.dy)
+        else:
+            self.score = 0
+
+        if self.y < 0 or self.y > self.height_px:
+            self.dy = -self.dy
+
+    def dibujar_frame(self, fig_ax=None):
+        # Si no existe la figura, crearla
+        if fig_ax is None:
+            fig, ax = plt.subplots(figsize=(5,4))
+        else:
+            fig, ax = fig_ax
+            ax.clear()  # limpiar el frame anterior
+
+        # dibujar la bola
+        circle = plt.Circle((self.x, self.y), self.radio, fc='slategray', ec="black")
+        ax.add_patch(circle)
+        # dibujar el jugador
+        rectangle = plt.Rectangle((-5, self.player1), 5, self.player_alto, fc='gold', ec="none")
+        ax.add_patch(rectangle)
+
+        # límites y texto
+        ax.set_xlim(-5, self.width_px+5)
+        ax.set_ylim(-5, self.height_px+5)
+        ax.text(4, self.height_px, f"SCORE:{self.total_reward}  LIFE:{self.lives}", fontsize=12)
+        if self.lives <=0:
+            ax.text(10, self.height_px-14, "GAME OVER", fontsize=16)
+        elif self.total_reward >= 1000:
+            ax.text(10, self.height_px-14, "YOU WIN!", fontsize=16)
+
+        plt.pause(0.001)  # pausa corta para que se refresque la ventana
+        sleep(0.02)
+        return fig, ax
+
+# ---------------------------
+# Agente clásico
+# ---------------------------
+class PongAgent:
+    def __init__(self, game, policy=None, discount_factor = 0.1, learning_rate = 0.1, ratio_explotacion = 0.9):
+        if policy is not None:
+            self._q_table = policy
+        else:
+            position = list(game.positions_space.shape)
+            position.append(len(game.action_space))
+            self._q_table = np.zeros(position)
+        self.discount_factor = discount_factor
+        self.learning_rate = learning_rate
+        self.ratio_explotacion = ratio_explotacion
+        # contadores para la comparativa
+        self.forward_calls = 0
+        self.backward_calls = 0
+
+    def get_next_step(self, state, game):
+        self.forward_calls += 1
+        next_step = np.random.choice(list(game.action_space))
+        if np.random.uniform() <= self.ratio_explotacion:
+            idx_action = np.random.choice(np.flatnonzero(
+                    self._q_table[state[0],state[1],state[2]] == self._q_table[state[0],state[1],state[2]].max()
+                ))
+            next_step = list(game.action_space)[idx_action]
+        return next_step
+
+    def update(self, game, old_state, action_taken, reward_action_taken, new_state, reached_end):
+        self.backward_calls += 1
+        idx_action_taken =list(game.action_space).index(action_taken)
+        actual_q_value_options = self._q_table[old_state[0], old_state[1], old_state[2]]
+        actual_q_value = actual_q_value_options[idx_action_taken]
+        future_q_value_options = self._q_table[new_state[0], new_state[1], new_state[2]]
+        future_max_q_value = reward_action_taken  +  self.discount_factor*future_q_value_options.max()
+        if reached_end:
+            future_max_q_value = reward_action_taken
+        self._q_table[old_state[0], old_state[1], old_state[2], idx_action_taken] = actual_q_value + \
+                                              self.learning_rate*(future_max_q_value -actual_q_value)
+
+    def get_policy(self):
+        return self._q_table
+
+# ---------------------------
+# Agente cuántico
+# ---------------------------
+class QuantumPongAgent:
+    """
+    Single-QNN multi-output agent con replay buffer y target network.
+    Mantiene la interfaz:
+      - get_next_step(state)
+      - update(state, action_taken, reward, next_state, done)
+    Recomendado params por defecto para simulación: lr=1e-3, batch_size=16, replay_size=1000.
+    """
+    def __init__(self, game, discount_factor=0.2, learning_rate=1e-3, ratio_explotacion=0.85, num_qubits=None, reps=1, device='cpu', replay_size=1000,
+                 batch_size=16, target_update=100, train_every=1, min_replay_size=32, grad_clip=1.0):
+        if not QISKIT_AVAILABLE:
+            raise RuntimeError("Qiskit/Torch no están disponibles en este entorno.")
+        # parámetros
+        self.discount_factor = discount_factor
+        self.learning_rate = learning_rate
+        self.ratio_explotacion = ratio_explotacion
+        self.action_space = game.action_space
+        self.num_actions = len(self.action_space)
+        # elegir num_qubits según estado si no dado
+        self.num_qubits = num_qubits if num_qubits is not None else len(game.state)
+        self.reps = reps
+        self.device = torch.device(device)
+        # replay buffer / training schedule
+        self.replay_size = replay_size
+        self.batch_size = batch_size
+        self.target_update = target_update
+        self.train_every = train_every
+        self.min_replay_size = min_replay_size
+        self.grad_clip = grad_clip
+
+        # instrumentación
+        self.forward_calls = 0
+        self.backward_calls = 0
+        self._train_steps = 0
+        self._update_calls = 0
+
+        # construir circuito + observables (uno por acción)
+        feature_map = ZZFeatureMap(self.num_qubits)
+        ansatz = RealAmplitudes(self.num_qubits, reps=self.reps)
+        qc = feature_map.compose(ansatz)
+
+        # construir observables: usamos Z en distintos qubits para que EstimatorQNN devuelva vector
+        # Notar: la elección del observable es algo arbitraria; aquí creamos Pauli Z en qubit i.
+        observables = []
+        for i in range(self.num_actions):
+            pauli_str = ['I'] * self.num_qubits
+            # map action -> pauli position (si hay menos acciones que qubits, reutilizamos)
+            pauli_str[i % self.num_qubits] = 'Z'
+            observables.append(Pauli(''.join(reversed(pauli_str))))  # qiskit ordering
+
+        # crear EstimatorQNN que devuelve un vector de expectativas
+        self.qnn = EstimatorQNN(circuit=qc,
+                                input_params=feature_map.parameters,
+                                weight_params=ansatz.parameters,
+                                observables=observables)
+
+        # conectar a torch (modelo principal y target)
+        self.model = TorchConnector(self.qnn).to(self.device)
+        self.target_model = TorchConnector(self.qnn).to(self.device)
+
+        # sincronizar pesos inicialmente (copia dura)
+        self._hard_update_target()
+
+        # optimizador y loss
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        self.loss_fn = nn.MSELoss()
+
+        # replay buffer: simple circular buffer de tuplas (s,a,r,s',done)
+        self._replay = []
+        self._replay_pos = 0
+
+    # -------------------------
+    # utilidades de replay / target
+    # -------------------------
+    def _hard_update_target(self):
+        # copia directa de parámetros
+        self.target_model.load_state_dict(self.model.state_dict())
+
+    def _push_replay(self, transition):
+        if len(self._replay) < self.replay_size:
+            self._replay.append(transition)
+        else:
+            self._replay[self._replay_pos] = transition
+            self._replay_pos = (self._replay_pos + 1) % self.replay_size
+
+    def _sample_replay(self, k):
+        idx = np.random.choice(len(self._replay), size=k, replace=False)
+        return [self._replay[i] for i in idx]
+
+    # -------------------------
+    # conversiones
+    # -------------------------
+    def state_to_tensor(self, state):
+        # escalado sencillo; compatible con tu función original (divide por 50)
+        t = torch.tensor([s / 50 for s in state], dtype=torch.float32, device=self.device)
+        # TorchConnector / EstimatorQNN suele esperar shape (n_features,) or (1, n_features).
+        # Dejar en 1D; TorchConnector aceptará ambos en forward.
+        return t
+
+    # -------------------------
+    # inferencia / política
+    # -------------------------
+    def get_next_step(self, state):
+        state_tensor = self.state_to_tensor(state)
+        # forward sin gradiente
+        with torch.no_grad():
+            self.forward_calls += 1
+            out = self.model(state_tensor)
+        # out puede ser tensor escalar, 1D o 2D; normalizar a 1D np array
+        try:
+            arr = out.detach().cpu().numpy().reshape(-1)
+        except Exception:
+            arr = np.array([float(out.item())])
+        # política epsilon-greedy
+        if np.random.uniform() <= self.ratio_explotacion:
+            idx = int(np.argmax(arr))
+            return self.action_space[idx]
+        else:
+            return np.random.choice(self.action_space)
+
+    # -------------------------
+    # actualización online: añadimos a replay y entrenamos por batches
+    # -------------------------
+    def update(self, state, action_taken, reward, next_state, done):
+        # guardar transición
+        self._push_replay((state, action_taken, reward, next_state, done))
+        self._update_calls += 1
+
+        # entrenar cada train_every llamadas, siempre que haya suficiente replay
+        if len(self._replay) >= max(self.min_replay_size, self.batch_size) and (self._update_calls % self.train_every == 0):
+            self._train_step()
+
+        # actualizar target network cada target_update pasos de entrenamiento
+        if self._train_steps > 0 and (self._train_steps % self.target_update == 0):
+            self._hard_update_target()
+
+    def _train_step(self):
+        batch = self._sample_replay(self.batch_size)
+        # batches
+        states = [b[0] for b in batch]
+        actions = [b[1] for b in batch]
+        rewards = [b[2] for b in batch]
+        next_states = [b[3] for b in batch]
+        dones = [b[4] for b in batch]
+
+        # convertir a tensores
+        state_tensors = torch.stack([self.state_to_tensor(s) for s in states])   # shape (B, n_features)
+        next_state_tensors = torch.stack([self.state_to_tensor(s) for s in next_states])
+
+        # forward pass del modelo principal y target (target sin grad)
+        # Nota: TorchConnector puede devolver shape (B, num_actions) o (num_actions,) si B=1. Ajustamos.
+        out = self.model(state_tensors)   # requiere grad
+        with torch.no_grad():
+            next_out_target = self.target_model(next_state_tensors)
+
+        # normalizar salidas a shape (B, num_actions)
+        def to_numpy_matrix(tensor_like):
+            try:
+                x = tensor_like.detach().cpu().numpy()
+            except Exception:
+                x = np.array([float(tensor_like)])
+            x = np.asarray(x)
+            if x.ndim == 1:
+                # B=1 case -> make shape (1, num_actions) or (1,)
+                return x.reshape(1, -1)
+            return x
+
+        out_np = to_numpy_matrix(out)
+        next_np = to_numpy_matrix(next_out_target)
+
+        # construir los targets: target = r + gamma * max_a' Q_target(next_state)[a']
+        targets = out_np.copy()  # base: mantenemos otras acciones igual (esto es útil para estabilidad)
+        for i in range(self.batch_size):
+            a = actions[i]
+            a_idx = self.action_space.index(a)
+            r = rewards[i]
+            done_flag = dones[i]
+            if done_flag:
+                tval = r
+            else:
+                tval = r + self.discount_factor * float(np.max(next_np[i]))
+            targets[i, a_idx] = tval
+
+        # convertir back a tensores
+        output_tensor = torch.tensor(out_np, dtype=torch.float32, device=self.device, requires_grad=True)
+        target_tensor = torch.tensor(targets, dtype=torch.float32, device=self.device)
+
+        # En vez de re-ejecutar el forward (ya lo hicimos y tenemos out), pero para grad necesitamos
+        # ejecutar forward en el graph real. Re-ejecutamos el forward sobre state_tensors:
+        self.optimizer.zero_grad()
+        predicted = self.model(state_tensors)  # shape (B, num_actions)
+        # construir loss: MSE sobre los valores correspondientes (preferible) o MSE full-vector
+        # Usamos MSE sobre acciones específicas (reduction='mean' mantiene escala)
+        loss = 0.0
+        for i in range(self.batch_size):
+            a = actions[i]
+            a_idx = self.action_space.index(a)
+            loss = loss + self.loss_fn(predicted[i, a_idx], target_tensor[i, a_idx])
+        loss = loss / float(self.batch_size)
+
+        # backward
+        loss.backward()
+        # clipping de gradientes
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+        self.optimizer.step()
+
+        # métricas
+        self.backward_calls += 1
+        self._train_steps += 1
+
+# ---------------------------
+# Runner de experimentos
+# ---------------------------
+def run_single(agent_type, mode, budget, seed, agent_kwargs, game_kwargs):
+    """
+    agent_type: 'classical' or 'quantum'
+    mode: 'time' or 'episodes'
+    budget: seconds if mode=='time', episodes if mode=='episodes'
+    seed: int
+    """
+    np.random.seed(seed)
+    # crear entorno y agente
+    game = PongEnvironment(**game_kwargs)
+    if agent_type == 'classical':
+        agent = PongAgent(game, **agent_kwargs)
+    elif agent_type == 'quantum':
+        if not QISKIT_AVAILABLE:
+            raise RuntimeError("Qiskit/Torch no disponibles para agente cuántico.")
+        agent = QuantumPongAgent(game, **agent_kwargs)
+    else:
+        raise ValueError("agent_type must be 'classical' or 'quantum'")
+
+    # métricas por episodio
+    ep_rewards = []
+    ep_times = []
+    ep_forward_calls = []
+    ep_backward_calls = []
+
+    start_total = time.time()
+    episodes_done = 0
+
+    # loop principal: finaliza por el modo elegido
+    while True:
+        # stop condition
+        if mode == 'time' and (time.time() - start_total) >= budget:
+            break
+        if mode == 'episodes' and episodes_done >= budget:
+            break
+
+        s = game.reset()
+        done = False
+        ep_start = time.time()
+        steps = 0
+        # jugar un episodio
+        while not done and steps < 3000 and game.total_reward <= 1000:
+            if agent_type == 'classical':
+                a = agent.get_next_step(s, game)
+            else:
+                a = agent.get_next_step(s)
+            next_s, r, done = game.step(a)
+            # actualizar (classical y quantum tienen signatura ligeramente distinta)
+            if agent_type == 'classical':
+                agent.update(game, s, a, r, next_s, done)
+            else:
+                agent.update(s, a, r, next_s, done)
+            s = next_s
+            steps += 1
+        ep_time = time.time() - ep_start
+        ep_rewards.append(game.total_reward)
+        ep_times.append(ep_time)
+        ep_forward_calls.append(getattr(agent, 'forward_calls', 0))
+        ep_backward_calls.append(getattr(agent, 'backward_calls', 0))
+        episodes_done += 1
+
+    total_time = time.time() - start_total
+    # resumen
+    summary = {
+        'agent_type': agent_type,
+        'seed': seed,
+        'episodes_done': episodes_done,
+        'total_time_s': total_time,
+        'avg_reward_per_ep': float(np.mean(ep_rewards)) if ep_rewards else 0.0,
+        'std_reward_per_ep': float(np.std(ep_rewards)) if ep_rewards else 0.0,
+        'avg_time_per_ep': float(np.mean(ep_times)) if ep_times else 0.0,
+        'total_forward_calls': int(ep_forward_calls[-1]) if ep_forward_calls else 0,
+        'total_backward_calls': int(ep_backward_calls[-1]) if ep_backward_calls else 0,
+        'rewards': ep_rewards,
+        'times': ep_times
+    }
+    return summary
+
+def aggregate_and_print(results, name):
+    seeds = [r['seed'] for r in results]
+    episodes = [r['episodes_done'] for r in results]
+    times = [r['total_time_s'] for r in results]
+    avg_rewards = [r['avg_reward_per_ep'] for r in results]
+    print(f"\n=== RESUMEN {name} ===")
+    print(f"Repeticiones: {len(results)}, Seeds: {seeds}")
+    print(f"Episodes per run: mean={statistics.mean(episodes):.1f} std={statistics.pstdev(episodes):.1f}")
+    print(f"Tiempo total (s): mean={statistics.mean(times):.1f} std={statistics.pstdev(times):.1f}")
+    print(f"Avg reward/ep: mean={statistics.mean(avg_rewards):.3f} std={statistics.pstdev(avg_rewards):.3f}")
+    # devolver tabla pandas
+    return pd.DataFrame([{
+        'seed': r['seed'],
+        'episodes_done': r['episodes_done'],
+        'total_time_s': r['total_time_s'],
+        'avg_reward_per_ep': r['avg_reward_per_ep'],
+        'std_reward_per_ep': r['std_reward_per_ep'],
+        'avg_time_per_ep': r['avg_time_per_ep'],
+        'total_forward_calls': r['total_forward_calls'],
+        'total_backward_calls': r['total_backward_calls']
+    } for r in results])
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', choices=['time','episodes'], default='time', help='Modo de igualación')
+    parser.add_argument('--budget', type=float, default=600.0, help='Segundos (time) o episodios (episodes)')
+    parser.add_argument('--repeats', type=int, default=1, help='Repeticiones por agente (seeds)')
+    parser.add_argument('--out', default='results', help='Directorio de salida para CSV/plots')
+    parser.add_argument('--agents', default='classical,quantum', help='Qué agentes correr: classical, quantum, o ambos separados por coma')
+    parser.add_argument('--reward', type=float, default=10.0, help='Recompensa por golpe de pelota (default=10)')
+    args = parser.parse_args()
+
+    os.makedirs(args.out, exist_ok=True)
+
+    seeds = list(range(args.repeats))
+    selected_agents = [a.strip() for a in args.agents.split(',')]
+    classical_results = []
+    quantum_results = []
+
+    # parámetros (ajustar aquí si QNN simula muy lento)
+    game_kwargs = {'max_life': 3, 'height_px': 40, 'width_px': 50, 'movimiento_px': 3, 'default_reward': args.reward}
+    classical_kwargs = {'discount_factor':0.2, 'learning_rate':0.1, 'ratio_explotacion':0.85}
+    quantum_kwargs = {'discount_factor':0.2, 'learning_rate':0.01, 'ratio_explotacion':0.85, 'num_qubits':3, 'reps':1}
+
+    for s in seeds:
+        if 'classical' in selected_agents:
+            print(f"\nRunning classical, seed={s}")
+            res_c = run_single('classical', args.mode, args.budget, s, classical_kwargs, game_kwargs)
+            classical_results.append(res_c)
+            print(f"  -> done episodes={res_c['episodes_done']} time={res_c['total_time_s']:.1f}s avg_r={res_c['avg_reward_per_ep']:.2f}")
+
+        if 'quantum' in selected_agents:
+            if QISKIT_AVAILABLE:
+                print(f"Running quantum, seed={s}")
+                res_q = run_single('quantum', args.mode, args.budget, s, quantum_kwargs, game_kwargs)
+                quantum_results.append(res_q)
+                print(f"  -> done episodes={res_q['episodes_done']} time={res_q['total_time_s']:.1f}s avg_r={res_q['avg_reward_per_ep']:.2f} fwd={res_q['total_forward_calls']}")
+            else:
+                print("Skipping quantum run: Qiskit/Torch no disponibles.")
+
+    # resumen e impresión
+    if classical_results:
+        df_classic = aggregate_and_print(classical_results, "CLÁSICO")
+        df_classic.to_csv(os.path.join(args.out, "classical_summary.csv"), index=False)
+        save_detail(classical_results, os.path.join(args.out, "classical_rewards.csv"))
+
+    if quantum_results:
+        df_quantum = aggregate_and_print(quantum_results, "CUÁNTICO")
+        df_quantum.to_csv(os.path.join(args.out, "quantum_summary.csv"), index=False)
+        save_detail(quantum_results, os.path.join(args.out, "quantum_rewards.csv"))
+
+    # plot ejemplo (reward medio por episodio across seeds)
+    try:
+        fig, ax = plt.subplots()
+        if classical_results:
+            dfc = pd.read_csv(os.path.join(args.out, "classical_rewards.csv"))
+            gp = dfc.groupby('ep')['reward'].agg(['mean','std']).reset_index()
+            ax.plot(gp['ep'], gp['mean'], label='clásico')
+        if quantum_results:
+            dfq = pd.read_csv(os.path.join(args.out, "quantum_rewards.csv"))
+            gq = dfq.groupby('ep')['reward'].agg(['mean','std']).reset_index()
+            ax.plot(gq['ep'], gq['mean'], label='cuántico')
+        ax.set_xlabel('episodio')
+        ax.set_ylabel('reward')
+        ax.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(args.out, "learning_curves.png"))
+        print(f"Gráfica guardada en {args.out}/learning_curves.png")
+    except Exception as e:
+        print("No se pudo generar la gráfica:", e)
+
+def save_detail(results, fname):
+    rows = []
+    for r in results:
+        for i, rew in enumerate(r['rewards']):
+            rows.append({'seed': r['seed'], 'ep': i, 'reward': rew})
+    pd.DataFrame(rows).to_csv(fname, index=False)
+
+if __name__ == '__main__':
+    main()

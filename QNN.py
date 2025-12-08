@@ -316,7 +316,7 @@ demo_game = PongEnvironment(max_life=3, movimiento_px=3)
 quantum_agent = QuantumPongAgent(demo_game, discount_factor=0.2, learning_rate=0.01, ratio_explotacion=0.85)
 
 # Entrenamiento
-learner, game = play_quantum(rounds=30, learner=quantum_agent, game=demo_game, animate=False)
+learner, game = play_quantum(rounds=30, learner=quantum_agent, game=demo_game, animate=True)
 
 # Demo final con animación
 state = demo_game.reset()

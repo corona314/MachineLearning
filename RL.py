@@ -240,10 +240,7 @@ def play(rounds=5000, max_life=3, discount_factor = 0.1, learning_rate = 0.1,
             print("-- Partidas[", played_games, "] Avg.Puntos[", int(total_rw/played_games),"]  AVG Steps[", int(np.array(steps).mean()), "] Max Score[", max_points,"]")
                 
     if played_games>1:
-        print('Partidas[',played_games,'] Avg.Puntos[',int(total_rw/played_games),'] Max score[', max_points,'] en partida[',first_max_reached,']')
-        
-    #learner.print_policy()
-    
+        print('Partidas[',played_games,'] Avg.Puntos[',int(total_rw/played_games),'] Max score[', max_points,'] en partida[',first_max_reached,']')    
     return learner, game
 
 
