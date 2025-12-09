@@ -244,7 +244,7 @@ def play(rounds=5000, max_life=3, discount_factor = 0.1, learning_rate = 0.1,
     return learner, game
 
 
-learner, game = play(rounds=10000, discount_factor = 0.2, learning_rate = 0.1, ratio_explotacion=0.85)
+learner, game = play(rounds=4000, discount_factor = 0.2, learning_rate = 0.1, ratio_explotacion=0.85)
 
 learner2 = PongAgent(game, policy=learner.get_policy())
 learner2.ratio_explotacion = 1.0
