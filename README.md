@@ -91,3 +91,7 @@ Tras cada ejecución se generan:
 * Todo aparece en la ruta que definas con --out.
 
 Los resultados ya tomados están en carpetas en el repositorio, cada uno toma resultados en un entorno en específico
+
+## Script compare.py
+
+compare.py se desarrolló para poder sacar comparativas rápidas entre diferentes rewards, hay que modificar código para cambiar los archivos a comparar pero no es muy complejo de entender dicho código.
